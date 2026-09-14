@@ -1,5 +1,12 @@
 
 {
 	"name": "com.supabase.unity",
-	"version": "1.0.0"
+	"version": "1.1.0",
+	"displayName": "Supabase for Unity",
+	"description": "Self-contained Supabase C# client for Unity.",
+	"unity": "2021.3",
+	"author": {
+		"name": "Jaxson Yorke",
+		"url": "https://github.com/JaxsonYorke/supabase-unity"
+	}
 }

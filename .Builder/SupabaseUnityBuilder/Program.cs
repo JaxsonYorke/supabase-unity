@@ -8,21 +8,10 @@ if(!Directory.Exists(submodulesDirPath))
 
 var unityDirPath = Path.Combine(repoDir.FullName, "Unity");
 var unityDir = new DirectoryInfo(unityDirPath);
-var supClonedDirPath = Path.Combine(unityDirPath, "supabase-cloned");
-Console.WriteLine(supClonedDirPath);
-// make sure we aren't deleting random "Unity" folder
-if (Directory.Exists(supClonedDirPath))
-{
-    Directory.Delete(supClonedDirPath, true);
-}
-
 unityDir.Create();
-Directory.CreateDirectory(supClonedDirPath);
 
 
-// copy cs files
 DirectoryInfo submodulesDir = new DirectoryInfo(submodulesDirPath);
-Utils.CopyDirectoryRecursive(submodulesDir, supClonedDirPath);
 
 
 // build dlls
@@ -73,7 +62,8 @@ var buildDir = new DirectoryInfo(Path.Combine(repoDir.FullName, ".build"));
 
 
 var unityDllsPath = Path.Combine(repoDir.FullName, ".UnityDlls");
-if(Directory.Exists(unityDllsPath))
+var runtimeDirPath = Path.Combine(unityDirPath, "Runtime");
+if (Directory.Exists(unityDllsPath))
 {
 	// Directory.Delete(unityDllsPath, true);
 	var filesToDelete = Directory.GetFiles(unityDllsPath, "*.dll", SearchOption.AllDirectories);
@@ -83,12 +73,41 @@ if(Directory.Exists(unityDllsPath))
 	}
 }
 
+Directory.CreateDirectory(runtimeDirPath);
+
 foreach(var file in buildDir.EnumerateFiles("*.dll"))
 {
-	var nameWithoutExt = Path.GetFileNameWithoutExtension(file.Name);
-	var destPath = Path.Combine(repoDir.FullName, ".UnityDlls", nameWithoutExt);
-	Directory.CreateDirectory(destPath);
-	file.CopyTo(Path.Combine(destPath, file.Name));
-	var packageJsonPath = Path.Combine(destPath, "package.json");
-	await File.WriteAllTextAsync(packageJsonPath, packageJsonTemplate.Replace("name_replace", $"com.supabase.dll.{nameWithoutExt.ToLowerInvariant()}"));
+	var destination = Path.Combine(runtimeDirPath, file.Name);
+	file.CopyTo(destination, true);
+	await File.WriteAllTextAsync(destination + ".meta", CreatePluginMeta());
 }
+
+static string CreatePluginMeta() =>
+@$"fileFormatVersion: 2
+guid: {Guid.NewGuid():N}
+PluginImporter:
+  externalObjects: {{}}
+  serializedVersion: 2
+  iconMap: {{}}
+  executionOrder: {{}}
+  defineConstraints: []
+  isPreloaded: 0
+  isOverridable: 1
+  isExplicitlyReferenced: 0
+  validateReferences: 1
+  platformData:
+  - first:
+      Any: 
+    second:
+      enabled: 1
+      settings: {{}}
+  - first:
+      Editor: Editor
+    second:
+      enabled: 0
+      settings:
+        DefaultValueInitialized: true
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+";
