@@ -65,6 +65,10 @@ Directory.CreateDirectory(runtimeDirPath);
 
 foreach(var file in buildDir.EnumerateFiles("*.dll"))
 {
+	if (file.Name.Equals("Microsoft.CSharp.dll", StringComparison.OrdinalIgnoreCase)
+		|| file.Name.Equals("System.Numerics.Vectors.dll", StringComparison.OrdinalIgnoreCase))
+		continue;
+
 	var destination = Path.Combine(runtimeDirPath, file.Name);
 	file.CopyTo(destination, true);
 	await File.WriteAllTextAsync(destination + ".meta", CreatePluginMeta());
