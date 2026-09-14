@@ -1,11 +1,10 @@
-﻿// https://github.com/dotnet/runtime/blob/419e949d258ecee4c40a460fb09c66d974229623/src/libraries/System.Private.CoreLib/src/System/Index.cs
-// https://github.com/dotnet/runtime/blob/419e949d258ecee4c40a460fb09c66d974229623/src/libraries/System.Private.CoreLib/src/System/Range.cs
-
-using System;
+﻿using System;
 using System.Runtime.CompilerServices;
-using Postgrest;
+using Supabase.Postgrest;
 
-namespace Postgrest
+// https://github.com/dotnet/runtime/blob/419e949d258ecee4c40a460fb09c66d974229623/src/libraries/System.Private.CoreLib/src/System/Index.cs
+// https://github.com/dotnet/runtime/blob/419e949d258ecee4c40a460fb09c66d974229623/src/libraries/System.Private.CoreLib/src/System/Range.cs
+namespace Supabase.Postgrest
 {
     /// <summary>Represent a type can be used to index a collection either from the start or the end.</summary>
     /// <remarks>
@@ -121,7 +120,7 @@ namespace Postgrest
 
         /// <summary>Indicates whether the current Index object is equal to another object of the same type.</summary>
         /// <param name="value">An object to compare with this object</param>
-        public override bool Equals(object? value) => value is Index && _value == ((Index)value)._value;
+        public override bool Equals(object? value) => value is Index index && _value == index._value;
 
         /// <summary>Indicates whether the current Index object is equal to another Index object.</summary>
         /// <param name="other">An object to compare with this object</param>
@@ -167,10 +166,6 @@ namespace Postgrest
         {
             Start = start;
             End = end;
-        }
-
-        public IntRange()
-        {
         }
 
         /// <summary>Indicates whether the current Range object is equal to another object of the same type.</summary>

@@ -1,65 +1,68 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Threading.Tasks;
-using Postgrest;
-using Postgrest.Models;
+using Supabase.Postgrest;
+using Supabase.Postgrest.Interfaces;
+using Supabase.Postgrest.Models;
+using Supabase.Interfaces;
 using Supabase.Realtime;
-using static Supabase.Client;
+using Supabase.Realtime.Interfaces;
+using static Supabase.Realtime.PostgresChanges.PostgresChangesOptions;
 
 namespace Supabase
 {
-    public class SupabaseTable<T> : Table<T> where T : BaseModel, new()
+    /// <summary>
+    /// A Supabase wrapper for a Postgrest Table.
+    /// </summary>
+    /// <typeparam name="TModel">Model that implements <see cref="BaseModel"/></typeparam>
+    public class SupabaseTable<TModel> : Table<TModel>, ISupabaseTable<TModel, RealtimeChannel>
+        where TModel : BaseModel, new()
     {
-        private Channel channel;
+        private RealtimeChannel? _channel;
+        private readonly IPostgrestClient _postgrestClient;
+        private readonly IRealtimeClient<RealtimeSocket, RealtimeChannel> _realtimeClient;
+        private readonly string _schema;
 
-        public SupabaseTable() : base(Client.Instance.RestUrl, new Postgrest.ClientOptions { Headers = Instance.GetAuthHeaders(), Schema = Instance.Schema })
-        { }
-
-        public SupabaseTable(string restUrl, Postgrest.ClientOptions options) : base(restUrl, options)
-        { }
-
-        public async Task<Channel> On(ChannelEventType e, Action<object, SocketResponseEventArgs> action)
+        /// <summary>
+        /// A Supabase wrapper for a Postgrest table.
+        /// </summary>
+        /// <param name="postgrestClient"></param>
+        /// <param name="realtimeClient"></param>
+        /// <param name="schema"></param>
+        public SupabaseTable(IPostgrestClient postgrestClient,
+            IRealtimeClient<RealtimeSocket, RealtimeChannel> realtimeClient, string schema = "public") : base(
+            postgrestClient.BaseUrl, Postgrest.Client.SerializerSettings(postgrestClient.Options),
+            postgrestClient.Options)
         {
-            if (channel == null)
+            _postgrestClient = postgrestClient;
+            _realtimeClient = realtimeClient;
+            _schema = schema;
+            GetHeaders = postgrestClient.GetHeaders;
+        }
+
+        /// <inheritdoc />
+        public async Task<RealtimeChannel> On(ListenType listenType, IRealtimeChannel.PostgresChangesHandler handler)
+        {
+            if (_channel == null)
             {
                 var parameters = new Dictionary<string, string>();
 
                 // In regard to: https://github.com/supabase/supabase-js/pull/270
-                var headers = Instance.GetAuthHeaders();
-                if (headers.ContainsKey("Authorization"))
+                var headers = _postgrestClient?.GetHeaders?.Invoke();
+                if (headers != null && headers.TryGetValue("Authorization", out var header))
                 {
-                    parameters.Add("user_token", headers["Authorization"].Split(' ')[1]);
+                    parameters.Add("user_token", header.Split(' ')[1]);
                 }
 
-                channel = Instance.Realtime.Channel("realtime", Instance.Schema, TableName, parameters: parameters);
+                _channel = _realtimeClient.Channel("realtime", _schema, TableName, parameters: parameters);
             }
 
-            if (Instance.Realtime.Socket == null || !Instance.Realtime.Socket.IsConnected)
-                await Instance.Realtime.ConnectAsync();
+            if (_realtimeClient.Socket == null || !_realtimeClient.Socket.IsConnected)
+                await _realtimeClient.ConnectAsync();
 
-            switch (e)
-            {
-                case ChannelEventType.Insert:
-                    channel.OnInsert += (sender, args) => action.Invoke(sender, args);
-                    break;
-                case ChannelEventType.Update:
-                    channel.OnUpdate += (sender, args) => action.Invoke(sender, args);
-                    break;
-                case ChannelEventType.Delete:
-                    channel.OnDelete += (sender, args) => action.Invoke(sender, args);
-                    break;
-                case ChannelEventType.All:
-                    channel.OnMessage += (sender, args) => action.Invoke(sender, args);
-                    break;
-            }
+            _channel.AddPostgresChangeHandler(listenType, handler);
 
-            try
-            {
-                await channel.Subscribe();
-            }
-            catch { }
-
-            return channel;
+            await _channel.Subscribe();
+            return _channel;
         }
     }
 }

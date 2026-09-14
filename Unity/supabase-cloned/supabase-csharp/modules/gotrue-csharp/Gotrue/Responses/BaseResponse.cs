@@ -1,7 +1,5 @@
-﻿using System;
-using System.Net.Http;
+﻿using System.Net.Http;
 using Newtonsoft.Json;
-
 namespace Supabase.Gotrue.Responses
 {
     /// <summary>
@@ -9,10 +7,16 @@ namespace Supabase.Gotrue.Responses
     /// </summary>
     public class BaseResponse
     {
+        /// <summary>
+        /// The HTTP response message.
+        /// </summary>
         [JsonIgnore]
-        public HttpResponseMessage ResponseMessage { get; set; }
+        public HttpResponseMessage? ResponseMessage { get; set; }
 
+        /// <summary>
+        /// The HTTP response content as a string.
+        /// </summary>
         [JsonIgnore]
-        public string Content { get; set; }
+        public string? Content { get; set; }
     }
 }

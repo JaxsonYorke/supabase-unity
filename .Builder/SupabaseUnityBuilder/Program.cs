@@ -11,15 +11,11 @@ var unityDir = new DirectoryInfo(unityDirPath);
 var supClonedDirPath = Path.Combine(unityDirPath, "supabase-cloned");
 Console.WriteLine(supClonedDirPath);
 // make sure we aren't deleting random "Unity" folder
-if(Directory.Exists(supClonedDirPath))
+if (Directory.Exists(supClonedDirPath))
 {
-	// unityDir.Delete(true); - this was bad as meta files shouldn't be deleted
-	var filesToDelete = Directory.GetFiles(supClonedDirPath, "*.cs", SearchOption.AllDirectories);
-	foreach(string delPath in filesToDelete)
-	{
-		File.Delete(delPath);
-	}
+    Directory.Delete(supClonedDirPath, true);
 }
+
 unityDir.Create();
 Directory.CreateDirectory(supClonedDirPath);
 

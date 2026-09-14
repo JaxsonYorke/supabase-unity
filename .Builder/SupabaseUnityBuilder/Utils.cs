@@ -18,14 +18,19 @@
 			totalFilesCopied++;
 		}
 
-		foreach(DirectoryInfo subDir in sourceDir.EnumerateDirectories())
+		foreach (DirectoryInfo subDir in sourceDir.EnumerateDirectories())
 		{
-			if(subDir.Name.StartsWith("."))
+			if (subDir.Name.StartsWith("."))
 				continue;
-		
-			if(subDir.Name.Contains("Test") 
-			   || subDir.Name.Contains("Example"))
+
+			if (subDir.Name.Equals("obj", StringComparison.OrdinalIgnoreCase)
+				|| subDir.Name.Equals("bin", StringComparison.OrdinalIgnoreCase))
 				continue;
+
+			if (subDir.Name.Contains("Test", StringComparison.OrdinalIgnoreCase)
+				|| subDir.Name.Contains("Example", StringComparison.OrdinalIgnoreCase))
+				continue;
+
 			string newDir = Path.Combine(destinationDir, subDir.Name);
 			totalFilesCopied += CopyDirectoryRecursive(subDir, newDir);
 		}

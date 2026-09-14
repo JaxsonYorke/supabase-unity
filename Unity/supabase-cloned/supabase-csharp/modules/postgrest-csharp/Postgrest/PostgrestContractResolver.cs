@@ -4,9 +4,10 @@ using System.Linq;
 using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
-using Postgrest.Converters;
+using Supabase.Postgrest.Attributes;
+using Supabase.Postgrest.Converters;
 
-namespace Postgrest.Attributes
+namespace Supabase.Postgrest
 {
     /// <summary>
     /// A custom resolver that handles mapping column names and property names as well
@@ -14,6 +15,24 @@ namespace Postgrest.Attributes
     /// </summary>
     public class PostgrestContractResolver : DefaultContractResolver
     {
+        private bool IsUpdate { get; set; }
+        private bool IsInsert { get; set; }
+        private bool IsUpsert { get; set; }
+
+        /// <summary>
+        /// Sets the state of the contract resolver to either insert, update, or upsert.
+        /// </summary>
+        /// <param name="isInsert"></param>
+        /// <param name="isUpdate"></param>
+        /// <param name="isUpsert"></param>
+        public void SetState(bool isInsert = false, bool isUpdate = false, bool isUpsert = false)
+        {
+            IsUpdate = isUpdate;
+            IsInsert = isInsert;
+            IsUpsert = isUpsert;
+        }
+
+        /// <inheritdoc />
         protected override JsonProperty CreateProperty(MemberInfo member, MemberSerialization memberSerialization)
         {
             JsonProperty prop = base.CreateProperty(member, memberSerialization);
@@ -51,18 +70,40 @@ namespace Postgrest.Attributes
             {
                 prop.PropertyName = columnAttribute.ColumnName;
                 prop.NullValueHandling = columnAttribute.NullValueHandling;
+
+                if (IsInsert && columnAttribute.IgnoreOnInsert)
+                    prop.Ignored = true;
+
+                if (IsUpdate && columnAttribute.IgnoreOnUpdate)
+                    prop.Ignored = true;
+
+                if ((IsUpsert && columnAttribute.IgnoreOnUpdate) || (IsUpsert && columnAttribute.IgnoreOnInsert))
+                    prop.Ignored = true;
+
+                return prop;
+            }
+
+            var referenceAttr = member.GetCustomAttribute<ReferenceAttribute>();
+
+            if (referenceAttr != null)
+            {
+                // If a foreign key is not specified, PostgREST will return JSON that uses the table's name as the key.
+                prop.PropertyName = string.IsNullOrEmpty(referenceAttr.ForeignKey)
+                    ? referenceAttr.TableName
+                    : referenceAttr.ColumnName;
+
+                if (IsInsert || IsUpdate)
+                    prop.Ignored = true;
+
                 return prop;
             }
 
             var primaryKeyAttribute = member.GetCustomAttribute<PrimaryKeyAttribute>();
-
             if (primaryKeyAttribute == null)
-            {
                 return prop;
-            }
 
             prop.PropertyName = primaryKeyAttribute.ColumnName;
-            prop.ShouldSerialize = instance => primaryKeyAttribute.ShouldInsert;
+            prop.ShouldSerialize = instance => primaryKeyAttribute.ShouldInsert || (IsUpsert && instance != null);
             return prop;
         }
     }

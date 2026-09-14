@@ -1,5 +1,4 @@
-﻿using System;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 
 namespace Supabase.Storage
 {
@@ -16,6 +15,12 @@ namespace Supabase.Storage
         /// </summary>
         [JsonProperty("offset")]
         public int Offset { get; set; } = 0;
+        
+        /// <summary>
+        /// The search string to filter files by
+        /// </summary>
+        [JsonProperty("search")]
+        public string Search { get; set; } = string.Empty;
 
         /// <summary>
         /// Column to sort by. Can be any colum inside of a <see cref="FileObject"/>

@@ -1,13 +1,13 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
+﻿using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Postgrest;
-using Postgrest.Models;
-using Postgrest.Responses;
+using Supabase.Postgrest.Models;
+using Supabase.Postgrest.Responses;
+using Supabase.Core;
 using Supabase.Extensions;
-using Supabase.Gotrue;
+using Supabase.Functions.Interfaces;
+using Supabase.Storage;
+using Supabase.Storage.Interfaces;
 
 namespace Supabase
 {
@@ -16,28 +16,39 @@ namespace Supabase
     /// </summary>
     public static class StatelessClient
     {
-        public static Gotrue.StatelessClient.StatelessClientOptions GetAuthOptions(string supabaseUrl, string supabaseKey = null, SupabaseOptions options = null)
+        /// <summary>
+        /// Returns an instance of <see cref="Gotrue.ClientOptions"/> given a provided url and key.
+        /// </summary>
+        /// <param name="supabaseUrl"></param>
+        /// <param name="supabaseKey"></param>
+        /// <param name="options"></param>
+        /// <returns></returns>
+        public static Gotrue.ClientOptions GetAuthOptions(string supabaseUrl, string? supabaseKey = null, SupabaseOptions? options = null)
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
             var headers = GetAuthHeaders(supabaseKey, options).MergeLeft(options.Headers);
 
-            return new Gotrue.StatelessClient.StatelessClientOptions
+            return new Gotrue.ClientOptions
             {
                 Url = string.Format(options.AuthUrlFormat, supabaseUrl),
                 Headers = headers
             };
         }
 
-        public static Postgrest.StatelessClientOptions GetRestOptions(string supabaseUrl, string supabaseKey = null, SupabaseOptions options = null)
+        /// <summary>
+        /// Returns an instance of <see cref="Postgrest.ClientOptions"/> for a given supabase key.
+        /// </summary>
+        /// <param name="supabaseKey"></param>
+        /// <param name="options"></param>
+        /// <returns></returns>
+        public static Postgrest.ClientOptions GetRestOptions(string? supabaseKey = null, SupabaseOptions? options = null)
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
             var headers = GetAuthHeaders(supabaseKey, options).MergeLeft(options.Headers);
 
-            return new Postgrest.StatelessClientOptions(string.Format(options.RestUrlFormat, supabaseUrl))
+            return new Postgrest.ClientOptions
             {
                 Schema = options.Schema,
                 Headers = headers
@@ -51,10 +62,9 @@ namespace Supabase
         /// <param name="supabaseKey"></param>
         /// <param name="options"></param>
         /// <returns></returns>
-        public static Storage.Client Storage(string supabaseUrl, string supabaseKey = null, SupabaseOptions options = null)
+        public static IStorageClient<Bucket, FileObject> Storage(string supabaseUrl, string? supabaseKey = null, SupabaseOptions? options = null)
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
             var headers = GetAuthHeaders(supabaseKey, options).MergeLeft(options.Headers);
 
@@ -68,10 +78,9 @@ namespace Supabase
         /// <param name="supabaseKey"></param>
         /// <param name="options"></param>
         /// <returns></returns>
-        public static SupabaseFunctions Functions(string supabaseUrl, string supabaseKey, SupabaseOptions options = null)
+        public static IFunctionsClient Functions(string supabaseUrl, string supabaseKey, SupabaseOptions? options = null)
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
             // See: https://github.com/supabase/supabase-js/blob/09065a65f171bc28a9fd7b831af2c24e5f1a380b/src/SupabaseClient.ts#L77-L83
             var isPlatform = new Regex(@"/(supabase\.co)|(supabase\.in)/").Match(supabaseUrl);
@@ -88,8 +97,10 @@ namespace Supabase
             }
 
             var headers = GetAuthHeaders(supabaseKey, options).MergeLeft(options.Headers);
+            var client = new Functions.Client(functionsUrl);
+            client.GetHeaders = () => headers;
 
-            return new SupabaseFunctions(functionsUrl, headers);
+            return client;
         }
 
         /// <summary>
@@ -97,51 +108,60 @@ namespace Supabase
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public static SupabaseTable<T> From<T>(string supabaseUrl, string supabaseKey, SupabaseOptions options = null) where T : BaseModel, new()
+        public static SupabaseTable<T> From<T>(string supabaseUrl, string supabaseKey, SupabaseOptions? options = null) where T : BaseModel, new()
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
-            var headers = GetAuthHeaders(supabaseKey, options).MergeLeft(options.Headers);
+            var restUrl = string.Format(options.RestUrlFormat, supabaseUrl);
+            var realtimeUrl = string.Format(options.RealtimeUrlFormat, supabaseUrl).Replace("http", "ws");
 
+            var restOptions = GetRestOptions(supabaseKey, options);
+            restOptions.Headers.MergeLeft(options.Headers);
 
-            return new SupabaseTable<T>(string.Format(options.RestUrlFormat, supabaseUrl), new Postgrest.ClientOptions
-            {
-                Headers = headers,
-                Schema = options.Schema
-            });
+            var realtimeOptions = new Realtime.ClientOptions { Parameters = { ApiKey = supabaseKey } };
+
+            var postgrestClient = new Postgrest.Client(restUrl, restOptions);
+            var realtimeClient = new Realtime.Client(realtimeUrl, realtimeOptions);
+
+            return new SupabaseTable<T>(postgrestClient, realtimeClient, options.Schema);
         }
 
         /// <summary>
         /// Runs a remote procedure.
         /// </summary>
+        /// <param name="supabaseUrl"></param>
+        /// <param name="supabaseKey"></param>
         /// <param name="procedureName"></param>
         /// <param name="parameters"></param>
+        /// <param name="options"></param>
         /// <returns></returns>
-        public static Task<BaseResponse> Rpc(string supabaseUrl, string supabaseKey, string procedureName, Dictionary<string, object> parameters, SupabaseOptions options = null)
+        public static Task<BaseResponse> Rpc(string supabaseUrl, string supabaseKey, string procedureName, Dictionary<string, object> parameters, SupabaseOptions? options = null)
         {
-            if (options == null)
-                options = new SupabaseOptions();
+            options ??= new SupabaseOptions();
 
-            return Postgrest.StatelessClient.Rpc(procedureName, parameters, GetRestOptions(supabaseUrl, supabaseKey, options));
+            return new Postgrest.Client(string.Format(options.RestUrlFormat, supabaseUrl), GetRestOptions(supabaseKey, options)).Rpc(procedureName, parameters);
         }
 
 
-        internal static Dictionary<string, string> GetAuthHeaders(string supabaseKey, SupabaseOptions options)
+        internal static Dictionary<string, string> GetAuthHeaders(string? supabaseKey, SupabaseOptions options)
         {
             var headers = new Dictionary<string, string>();
-            headers["apiKey"] = supabaseKey;
-            headers["X-Client-Info"] = Util.GetAssemblyVersion();
+
+            headers["X-Client-Info"] = Util.GetAssemblyVersion(typeof(Client));
+
+            if (supabaseKey != null)
+            {
+                headers["apiKey"] = supabaseKey;
+            }
 
             // In Regard To: https://github.com/supabase/supabase-csharp/issues/5
-            if (options.Headers.ContainsKey("Authorization"))
+            if (options.Headers.TryGetValue("Authorization", out var header))
             {
-                headers["Authorization"] = options.Headers["Authorization"];
+                headers["Authorization"] = header;
             }
             else
             {
-                var bearer = supabaseKey;
-                headers["Authorization"] = $"Bearer {bearer}";
+                headers["Authorization"] = $"Bearer {supabaseKey}";
             }
 
             return headers;

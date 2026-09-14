@@ -1,275 +1,278 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Postgrest;
-using Postgrest.Models;
-using Postgrest.Responses;
+using Supabase.Postgrest.Interfaces;
+using Supabase.Postgrest.Models;
+using Supabase.Postgrest.Responses;
+using Supabase.Core;
+using Supabase.Functions.Interfaces;
 using Supabase.Gotrue;
-using static Supabase.Functions.Client;
+using Supabase.Gotrue.Interfaces;
+using Supabase.Interfaces;
+using Supabase.Realtime;
+using Supabase.Realtime.Interfaces;
+using Supabase.Storage;
+using Supabase.Storage.Interfaces;
+using static Supabase.Gotrue.Constants;
 
 namespace Supabase
 {
     /// <summary>
-    /// A singleton class representing a Supabase Client.
+    /// A class representing the Supabase Client, coordinating between all child APIs
     /// </summary>
-    public class Client
+    public class Client : ISupabaseClient<User, Session, RealtimeSocket, RealtimeChannel, Bucket, FileObject>
     {
-        public enum ChannelEventType
-        {
-            Insert,
-            Update,
-            Delete,
-            All
-        }
-
         /// <summary>
         /// Supabase Auth allows you to create and manage user sessions for access to data that is secured by access policies.
         /// </summary>
-        public Gotrue.Client Auth { get; private set; }
-        public Realtime.Client Realtime { get; private set; }
+        public IGotrueClient<User, Session> Auth
+        {
+            get => this.auth;
+            set
+            {
+                // Remove existing internal state listener (if applicable)
+                this.auth.RemoveStateChangedListener(this.Auth_StateChanged);
+                this.auth = value;
+                this.auth.AddStateChangedListener(this.Auth_StateChanged);
+            }
+        }
+
+        private IGotrueClient<User, Session> auth;
+
+        /// <summary>
+        /// Returns a Stateless Gotrue Admin client given a service_key JWT. This should really only be accessed from a
+        /// server environment where a private service_key would remain secure.
+        /// </summary>
+        /// <param name="serviceKey"></param>
+        /// <returns></returns>
+        public IGotrueAdminClient<User> AdminAuth(string serviceKey) =>
+            new AdminClient(serviceKey, new Gotrue.ClientOptions
+            {
+                Url = string.Format(this.options.AuthUrlFormat, this.supabaseUrl),
+                AutoRefreshToken = this.options.AutoRefreshToken
+            })
+            {
+                GetHeaders = this.GetAuthHeaders,
+            };
+
+        /// <summary>
+        /// Supabase Realtime allows for realtime feedback on database changes.
+        /// </summary>
+        public IRealtimeClient<RealtimeSocket, RealtimeChannel> Realtime
+        {
+            get => this.realtime;
+            set
+            {
+                // Disconnect from previous RealtimeSocket (if applicable)
+                this.realtime.Disconnect();
+                this.realtime = value;
+            }
+        }
+
+        private IRealtimeClient<RealtimeSocket, RealtimeChannel> realtime;
 
         /// <summary>
         /// Supabase Edge functions allow you to deploy and invoke edge functions.
         /// </summary>
-        public SupabaseFunctions Functions => new SupabaseFunctions(instance.FunctionsUrl, instance.GetAuthHeaders());
-
-        private Postgrest.Client Postgrest() => global::Postgrest.Client.Initialize(instance.RestUrl, new Postgrest.ClientOptions
+        public IFunctionsClient Functions
         {
-            Headers = instance.GetAuthHeaders(),
-            Schema = Schema
-        });
-
-        private static Client instance;
-        public static Client Instance
-        {
-            get
-            {
-                if (instance == null)
-                {
-                    Debug.WriteLine("Supabase must be initialized before it is called.");
-                    return null;
-                }
-                return instance;
-            }
+            get => this.functions;
+            set => this.functions = value;
         }
 
-        public string SupabaseKey { get; private set; }
-        public string SupabaseUrl { get; private set; }
-        public string AuthUrl { get; private set; }
-        public string RestUrl { get; private set; }
-        public string RealtimeUrl { get; private set; }
-        public string StorageUrl { get; private set; }
-        public string FunctionsUrl { get; private set; }
-        public string Schema { get; private set; }
-
-        private SupabaseOptions options;
-
-        private Client() { }
-
+        private IFunctionsClient functions;
 
         /// <summary>
-        /// Initializes a Supabase Client.
+        /// Supabase Postgrest allows for strongly typed REST interactions with your database.
         /// </summary>
-        /// <param name="supabaseUrl"></param>
-        /// <param name="supabaseKey"></param>
-        /// <param name="options"></param>
-        /// <returns></returns>
-        public static void Initialize(string supabaseUrl, string supabaseKey, SupabaseOptions options = null, Action<Client> callback = null)
+        public IPostgrestClient Postgrest
         {
-            Task.Run(async () =>
-            {
-                var result = await InitializeAsync(supabaseUrl, supabaseKey, options);
-                callback?.Invoke(result);
-            });
+            get => this.postgrest;
+            set => this.postgrest = value;
         }
 
-        /// <summary>
-        /// Initializes a Supabase Client Asynchronously.
-        /// </summary>
-        /// <param name="supabaseUrl"></param>
-        /// <param name="supabaseKey"></param>
-        /// <param name="options"></param>
-        /// <returns></returns>
-        public static async Task<Client> InitializeAsync(string supabaseUrl, string supabaseKey, SupabaseOptions options = null)
-        {
-            instance = new Client();
-
-            instance.SupabaseUrl = supabaseUrl;
-            instance.SupabaseKey = supabaseKey;
-
-            if (options == null)
-                options = new SupabaseOptions();
-
-            instance.options = options;
-            instance.AuthUrl = string.Format(options.AuthUrlFormat, supabaseUrl);
-            instance.RestUrl = string.Format(options.RestUrlFormat, supabaseUrl);
-            instance.RealtimeUrl = string.Format(options.RealtimeUrlFormat, supabaseUrl).Replace("http", "ws");
-            instance.StorageUrl = string.Format(options.StorageUrlFormat, supabaseUrl);
-            instance.Schema = options.Schema;
-
-            // See: https://github.com/supabase/supabase-js/blob/09065a65f171bc28a9fd7b831af2c24e5f1a380b/src/SupabaseClient.ts#L77-L83
-            var isPlatform = new Regex(@"(supabase\.co)|(supabase\.in)").Match(supabaseUrl);
-
-            if (isPlatform.Success)
-            {
-                var parts = supabaseUrl.Split('.');
-                instance.FunctionsUrl = $"{parts[0]}.functions.{parts[1]}.{parts[2]}";
-            }
-            else
-            {
-                instance.FunctionsUrl = string.Format(options.FunctionsUrlFormat, supabaseUrl);
-            }
-
-            // Init Auth
-            instance.Auth = await Gotrue.Client.InitializeAsync(new Gotrue.ClientOptions
-            {
-                Url = instance.AuthUrl,
-                Headers = instance.GetAuthHeaders(),
-                AutoRefreshToken = options.AutoRefreshToken,
-                PersistSession = options.PersistSession,
-                SessionDestroyer = options.SessionDestroyer,
-                SessionPersistor = options.SessionPersistor,
-                SessionRetriever = options.SessionRetriever
-            });
-            instance.Auth.StateChanged += Auth_StateChanged;
-
-            // Init Realtime
-            if (options.ShouldInitializeRealtime)
-            {
-                instance.Realtime = Supabase.Realtime.Client.Initialize(instance.RealtimeUrl, new Realtime.ClientOptions
-                {
-                    Parameters = { ApiKey = instance.SupabaseKey }
-                });
-
-                if (options.AutoConnectRealtime)
-                {
-                    await instance.Realtime.ConnectAsync();
-                }
-            }
-
-            return instance;
-        }
-
-        private static void Auth_StateChanged(object sender, ClientStateChanged e)
-        {
-            switch (e.State)
-            {
-                // Pass new Auth down to Realtime
-                // Ref: https://github.com/supabase-community/supabase-csharp/issues/12
-                case Gotrue.Client.AuthState.SignedIn:
-                case Gotrue.Client.AuthState.TokenRefreshed:
-                    if (Instance.Realtime != null)
-                    {
-                        Instance.Realtime.SetAuth(Instance.Auth.CurrentSession.AccessToken);
-                    }
-                    break;
-
-                // Remove Realtime Subscriptions on Auth Signout.
-                case Gotrue.Client.AuthState.SignedOut:
-                    if (Instance.Realtime != null)
-                    {
-                        foreach (var subscription in Instance.Realtime.Subscriptions.Values)
-                            subscription.Unsubscribe();
-
-                        Instance.Realtime.Disconnect();
-                    }
-                    break;
-            }
-        }
+        private IPostgrestClient postgrest;
 
         /// <summary>
         /// Supabase Storage allows you to manage user-generated content, such as photos or videos.
         /// </summary>
-        public Storage.Client Storage => new Storage.Client(StorageUrl, GetAuthHeaders());
+        public IStorageClient<Bucket, FileObject> Storage
+        {
+            get => this.storage;
+            set => this.storage = value;
+        }
+
+        private IStorageClient<Bucket, FileObject> storage;
+
+        private readonly string? supabaseUrl;
+        private readonly string? supabaseKey;
+        private readonly SupabaseOptions options;
+
+        /// <summary>
+        /// Constructor supplied for dependency injection support.
+        /// </summary>
+        /// <param name="auth"></param>
+        /// <param name="realtime"></param>
+        /// <param name="functions"></param>
+        /// <param name="postgrest"></param>
+        /// <param name="storage"></param>
+        /// <param name="options"></param>
+        public Client(IGotrueClient<User, Session> auth, IRealtimeClient<RealtimeSocket, RealtimeChannel> realtime,
+            IFunctionsClient functions, IPostgrestClient postgrest, IStorageClient<Bucket, FileObject> storage,
+            SupabaseOptions options)
+        {
+            this.auth = auth;
+            this.realtime = realtime;
+            this.functions = functions;
+            this.postgrest = postgrest;
+            this.storage = storage;
+            this.options = options;
+            this.realtime.Options.PostgrestClient = this.postgrest;
+        }
+
+        /// <summary>
+        /// Creates a new Supabase Client.
+        /// </summary>
+        /// <param name="supabaseUrl"></param>
+        /// <param name="supabaseKey"></param>
+        /// <param name="options"></param>
+        public Client(string supabaseUrl, string? supabaseKey, SupabaseOptions? options = null)
+        {
+            this.supabaseUrl = supabaseUrl;
+            this.supabaseKey = supabaseKey;
+            this.options = options ?? new SupabaseOptions();
+
+            var authUrl = string.Format(this.options.AuthUrlFormat, supabaseUrl);
+            var restUrl = string.Format(this.options.RestUrlFormat, supabaseUrl);
+            var realtimeUrl = string.Format(this.options.RealtimeUrlFormat, supabaseUrl).Replace("http", "ws");
+            var storageUrl = string.Format(this.options.StorageUrlFormat, supabaseUrl);
+            var schema = this.options.Schema;
+
+            // See: https://github.com/supabase/supabase-js/blob/09065a65f171bc28a9fd7b831af2c24e5f1a380b/src/SupabaseClient.ts#L77-L83
+            var isPlatform = new Regex(@"(supabase\.co)|(supabase\.in)").Match(supabaseUrl);
+
+            string? functionsUrl;
+            if (isPlatform.Success)
+            {
+                var parts = supabaseUrl.Split('.');
+                functionsUrl = $"{parts[0]}.functions.{parts[1]}.{parts[2]}";
+            }
+            else
+            {
+                functionsUrl = string.Format(this.options.FunctionsUrlFormat, supabaseUrl);
+            }
+
+            // Init Auth
+            var gotrueOptions = new Gotrue.ClientOptions
+            {
+                Url = authUrl,
+                AutoRefreshToken = this.options.AutoRefreshToken
+            };
+            this.auth = new Gotrue.Client(gotrueOptions);
+            this.auth.SetPersistence(this.options.SessionHandler);
+            this.auth.AddStateChangedListener(this.Auth_StateChanged);
+            this.auth.GetHeaders = this.GetAuthHeaders;
+            this.postgrest = new Postgrest.Client(restUrl, new Postgrest.ClientOptions { Schema = schema });
+            this.postgrest.GetHeaders = this.GetAuthHeaders;
+
+            // Init Realtime
+
+            var realtimeOptions = new Realtime.ClientOptions
+            {
+                Parameters = { ApiKey = this.supabaseKey },
+                PostgrestClient = this.postgrest
+            };
+            this.realtime = new Realtime.Client(realtimeUrl, realtimeOptions);
+            this.realtime.GetHeaders = this.GetAuthHeaders;
+            this.functions = new Functions.Client(functionsUrl);
+            this.functions.GetHeaders = this.GetAuthHeaders;
+            this.storage = new Storage.Client(storageUrl, this.options.StorageClientOptions);
+            this.storage.GetHeaders = this.GetAuthHeaders;
+        }
+
+
+        /// <summary>
+        /// Attempts to retrieve the session from Gotrue (set in <see cref="SupabaseOptions"/>) and connects to realtime (if `options.AutoConnectRealtime` is set)
+        /// </summary>
+        public async Task<ISupabaseClient<User, Session, RealtimeSocket, RealtimeChannel, Bucket, FileObject>>
+            InitializeAsync()
+        {
+            await this.Auth.RetrieveSessionAsync();
+
+            if (this.options.AutoConnectRealtime)
+                await this.Realtime.ConnectAsync();
+
+            return this;
+        }
+
+        private void Auth_StateChanged(object sender, AuthState e)
+        {
+            switch (e)
+            {
+                // Pass new Auth down to Realtime
+                // Ref: https://github.com/supabase-community/supabase-csharp/issues/12
+                case AuthState.SignedIn:
+                case AuthState.TokenRefreshed:
+                case AuthState.UserUpdated:
+                    if (this.Auth.CurrentSession?.AccessToken != null)
+                        this.Realtime.SetAuth(this.Auth.CurrentSession.AccessToken);
+                    break;
+                // Remove Realtime Subscriptions on Auth Sign-out.
+                case AuthState.SignedOut:
+                    this.Realtime.Subscriptions.Values?.ToList().ForEach(subscription => subscription.Unsubscribe());
+                    break;
+                case AuthState.PasswordRecovery:
+                case AuthState.Shutdown: break;
+                case AuthState.MfaChallengeVerified:
+                default: throw new ArgumentOutOfRangeException(nameof(e), e, null);
+            }
+        }
 
         /// <summary>
         /// Gets the Postgrest client to prepare for a query.
         /// </summary>
-        /// <typeparam name="T"></typeparam>
+        /// <typeparam name="TModel"></typeparam>
         /// <returns></returns>
-        public SupabaseTable<T> From<T>() where T : BaseModel, new() => new SupabaseTable<T>();
+        public ISupabaseTable<TModel, RealtimeChannel> From<TModel>() where TModel : BaseModel, new() =>
+            new SupabaseTable<TModel>(this.Postgrest, this.Realtime);
+
+        /// <inheritdoc />
+        public Task<BaseResponse> Rpc(string procedureName, object? parameters) => this.postgrest.Rpc(procedureName, parameters);
+
+        /// <inheritdoc />
+        public Task<TModeledResponse?> Rpc<TModeledResponse>(string procedureName, object? parameters) => this.postgrest.Rpc<TModeledResponse>(procedureName, parameters);
 
         /// <summary>
-        /// Runs a remote procedure.
-        /// </summary>
-        /// <param name="procedureName"></param>
-        /// <param name="parameters"></param>
-        /// <returns></returns>
-        public Task<BaseResponse> Rpc(string procedureName, Dictionary<string, object> parameters) => Postgrest().Rpc(procedureName, parameters);
-
-
+        /// Produces a dictionary of Headers that will be supplied to child clients.
+        ///</summary>
         internal Dictionary<string, string> GetAuthHeaders()
         {
-            var headers = new Dictionary<string, string>();
-            headers["apiKey"] = SupabaseKey;
-            headers["X-Client-Info"] = Util.GetAssemblyVersion();
+            var headers = CaseInsensitiveHeaders();
+            headers["X-Client-Info"] = Util.GetAssemblyVersion(typeof(Client));
+
+            if (this.supabaseKey != null)
+                headers["apiKey"] = this.supabaseKey;
 
             // In Regard To: https://github.com/supabase/supabase-csharp/issues/5
-            if (options.Headers.ContainsKey("Authorization"))
+            if (this.options.Headers.TryGetValue("Authorization", out var header))
             {
-                headers["Authorization"] = options.Headers["Authorization"];
+                headers["Authorization"] = header;
             }
             else
             {
-                var bearer = Auth?.CurrentSession?.AccessToken != null ? Auth.CurrentSession.AccessToken : SupabaseKey;
+                var bearer = this.Auth.CurrentSession?.AccessToken ?? this.supabaseKey;
                 headers["Authorization"] = $"Bearer {bearer}";
             }
 
+            // Add supplied headers from `ClientOptions` by developer
+            foreach (var kvp in this.options.Headers)
+                headers[kvp.Key] = kvp.Value;
+
             return headers;
         }
-    }
 
-    /// <summary>
-    /// Options available for Supabase Client Configuration
-    /// </summary>
-    public class SupabaseOptions
-    {
-        public string Schema = "public";
-
-        /// <summary>
-        /// Should the Client automatically handle refreshing the User's Token?
-        /// </summary>
-        public bool AutoRefreshToken { get; set; } = true;
-
-        /// <summary>
-        /// Should the Client Initialize Realtime?
-        /// </summary>
-        public bool ShouldInitializeRealtime { get; set; } = false;
-
-        /// <summary>
-        /// Should the Client automatically connect to Realtime?
-        /// </summary>
-        public bool AutoConnectRealtime { get; set; } = false;
-
-        /// <summary>
-        /// Should the Client call <see cref="SessionPersistor"/>, <see cref="SessionRetriever"/>, and <see cref="SessionDestroyer"/>?
-        /// </summary>
-        public bool PersistSession { get; set; } = true;
-
-        /// <summary>
-        /// Function called to persist the session (probably on a filesystem or cookie)
-        /// </summary>
-        public Func<Session, Task<bool>> SessionPersistor = (Session session) => Task.FromResult<bool>(true);
-
-        /// <summary>
-        /// Function to retrieve a session (probably from the filesystem or cookie)
-        /// </summary>
-        public Func<Task<Session>> SessionRetriever = () => Task.FromResult<Session>(null);
-
-        /// <summary>
-        /// Function to destroy a session.
-        /// </summary>
-        public Func<Task<bool>> SessionDestroyer = () => Task.FromResult<bool>(true);
-
-        public Dictionary<string, string> Headers = new Dictionary<string, string>();
-
-        public string AuthUrlFormat { get; set; } = "{0}/auth/v1";
-        public string RestUrlFormat { get; set; } = "{0}/rest/v1";
-        public string RealtimeUrlFormat { get; set; } = "{0}/realtime/v1";
-        public string StorageUrlFormat { get; set; } = "{0}/storage/v1";
-
-        public string FunctionsUrlFormat { get; set; } = "{0}/functions/v1";
+        private static Dictionary<string, string> CaseInsensitiveHeaders() => new(StringComparer.OrdinalIgnoreCase);
     }
 }

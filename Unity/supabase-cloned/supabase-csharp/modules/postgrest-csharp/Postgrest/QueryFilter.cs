@@ -1,29 +1,89 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Linq.Expressions;
 using Newtonsoft.Json;
-using static Postgrest.Constants;
+using Supabase.Postgrest.Exceptions;
+using Supabase.Postgrest.Interfaces;
+using Supabase.Postgrest.Linq;
+using static Supabase.Postgrest.Constants;
 
-namespace Postgrest
+namespace Supabase.Postgrest
 {
-    public class QueryFilter
+    /// <summary>
+    /// Allow for the expression of a query filter with linq expressions.
+    /// </summary>
+    /// <typeparam name="TModel"></typeparam>
+    /// <typeparam name="TCriterion"></typeparam>
+    public class QueryFilter<TModel, TCriterion> : IPostgrestQueryFilter
+    {
+        /// <inheritdoc />
+        public object? Criteria { get; }
+
+        /// <inheritdoc />
+        public Operator Op { get; }
+
+        /// <inheritdoc />
+        public string? Property { get; }
+
+        /// <summary>
+        /// Allows the creation of a Query Filter using a LINQ expression.
+        /// </summary>
+        /// <param name="predicate"></param>
+        /// <param name="op"></param>
+        /// <param name="criterion"></param>
+        /// <exception cref="ArgumentException"></exception>
+        public QueryFilter(Expression<Func<TModel, object>> predicate, Operator op, TCriterion? criterion)
+        {
+            var visitor = new SelectExpressionVisitor();
+            visitor.Visit(predicate);
+
+            if (visitor.Columns.Count == 0)
+                throw new ArgumentException("Expected predicate to return a reference to a Model column.");
+
+            if (visitor.Columns.Count > 1)
+                throw new ArgumentException("Only one column should be returned from the predicate.");
+
+            var filter = new QueryFilter(visitor.Columns.First(), op, criterion);
+
+            Criteria = filter.Criteria;
+            Op = filter.Op;
+            Property = filter.Property;
+        }
+    }
+
+    /// <inheritdoc />
+    public class QueryFilter : IPostgrestQueryFilter
     {
         /// <summary>
-        /// String value to be subsituted for a null criterion
+        /// String value to be substituted for a null criterion
         /// </summary>
         public const string NullVal = "null";
 
-        public string Property { get; private set; }
+        /// <inheritdoc />
+        public string? Property { get; private set; }
+
+        /// <inheritdoc />
         public Operator Op { get; private set; }
-        public object Criteria { get; private set; }
+
+        /// <inheritdoc />
+        public object? Criteria { get; private set; }
 
         /// <summary>
-        /// Contructor to use single value filtering.
+        /// Contractor to use single value filtering.
         /// </summary>
         /// <param name="property">Column name</param>
         /// <param name="op">Operation: And, Equals, GreaterThan, LessThan, GreaterThanOrEqual, LessThanOrEqual, NotEqual, Is, Adjacent, Not, Like, ILike</param>
         /// <param name="criteria"></param>
-        public QueryFilter(string property, Operator op, object criteria)
+        public QueryFilter(string property, Operator op, object? criteria)
         {
+            if (criteria is DateTime dateTime)
+                criteria = dateTime.ToString("o", CultureInfo.InvariantCulture);
+            if (criteria is DateTimeOffset dateTimeOffset)
+                criteria = dateTimeOffset.ToString("o", CultureInfo.InvariantCulture);
+            
             switch (op)
             {
                 case Operator.And:
@@ -42,55 +102,26 @@ namespace Postgrest
                     Op = op;
                     Criteria = criteria;
                     break;
-                default:
-                    throw new Exception("Advanced filters require a constructor with more specific arguments");
-            }
-
-        }
-
-        /// <summary>
-        /// Constructor to use multiple values as for filtering.
-        /// </summary>
-        /// <param name="property">Column name</param>
-        /// <param name="op">Operation: In, Contains, ContainedIn, or Overlap</param>
-        /// <param name="criteria"></param>
-        public QueryFilter(string property, Operator op, List<object> criteria)
-        {
-            switch (op)
-            {
                 case Operator.In:
                 case Operator.Contains:
                 case Operator.ContainedIn:
                 case Operator.Overlap:
-                    Property = property;
-                    Op = op;
-                    Criteria = criteria;
+                    if (criteria is IList or IDictionary)
+                    {
+                        Property = property;
+                        Op = op;
+                        Criteria = criteria;
+                    }
+                    else
+                    {
+                        throw new PostgrestException(
+                                "List or Dictionary must be used supplied as criteria with filters that accept an array of arguments.")
+                            { Reason = FailureHint.Reason.InvalidArgument };
+                    }
                     break;
                 default:
-                    throw new Exception("List constructor must be used with filter that accepts an array of arguments.");
-            }
-        }
-
-        /// <summary>
-        /// Constructor to use multiple values as for filtering (using a dictionary).
-        /// </summary>
-        /// <param name="property">Column name</param>
-        /// <param name="op">Operation: In, Contains, ContainedIn, or Overlap</param>
-        /// <param name="criteria"></param>
-        public QueryFilter(string property, Operator op, Dictionary<string, object> criteria)
-        {
-            switch (op)
-            {
-                case Operator.In:
-                case Operator.Contains:
-                case Operator.ContainedIn:
-                case Operator.Overlap:
-                    Property = property;
-                    Op = op;
-                    Criteria = criteria;
-                    break;
-                default:
-                    throw new Exception("List constructor must be used with filter that accepts an array of arguments.");
+                    throw new PostgrestException("Advanced filters require a constructor with more specific arguments")
+                        { Reason = FailureHint.Reason.InvalidArgument };
             }
         }
 
@@ -113,7 +144,8 @@ namespace Postgrest
                     Criteria = fullTextSearchConfig;
                     break;
                 default:
-                    throw new Exception("Constructor must be called with a full text search operator");
+                    throw new PostgrestException("Constructor must be called with a full text search operator")
+                        { Reason = FailureHint.Reason.InvalidArgument };
             }
         }
 
@@ -140,7 +172,10 @@ namespace Postgrest
                     Criteria = range;
                     break;
                 default:
-                    throw new Exception("Constructor must be called with a filter that accepts a range");
+                    throw new PostgrestException("Constructor must be called with a filter that accepts a range")
+                    {
+                        Reason = FailureHint.Reason.InvalidArgument
+                    };
             }
         }
 
@@ -149,7 +184,7 @@ namespace Postgrest
         /// </summary>
         /// <param name="op">Operation: And, Or</param>
         /// <param name="filters"></param>
-        public QueryFilter(Operator op, List<QueryFilter> filters)
+        public QueryFilter(Operator op, List<IPostgrestQueryFilter> filters)
         {
             switch (op)
             {
@@ -159,7 +194,8 @@ namespace Postgrest
                     Criteria = filters;
                     break;
                 default:
-                    throw new Exception("Contructor can only be used with `or` or `and` filters");
+                    throw new PostgrestException("Constructor can only be used with `or` or `and` filters")
+                        { Reason = FailureHint.Reason.InvalidArgument };
             }
         }
 
@@ -168,7 +204,7 @@ namespace Postgrest
         /// </summary>
         /// <param name="op">Operation: Not.</param>
         /// <param name="filter"></param>
-        public QueryFilter(Operator op, QueryFilter filter)
+        public QueryFilter(Operator op, IPostgrestQueryFilter filter)
         {
             switch (op)
             {
@@ -177,7 +213,8 @@ namespace Postgrest
                     Criteria = filter;
                     break;
                 default:
-                    throw new Exception("Contructor can only be used with `not` filter");
+                    throw new PostgrestException("Constructor can only be used with `not` filter")
+                        { Reason = FailureHint.Reason.InvalidArgument };
             }
         }
     }
@@ -188,16 +225,29 @@ namespace Postgrest
     /// </summary>
     public class FullTextSearchConfig
     {
+        /// <summary>
+        /// Query Text
+        /// </summary>
         [JsonProperty("queryText")]
         public string QueryText { get; private set; }
 
+        /// <summary>
+        /// Defaults to english
+        /// </summary>
         [JsonProperty("config")]
         public string Config { get; private set; } = "english";
 
-        public FullTextSearchConfig(string queryText, string config)
+        /// <summary>
+        /// Constructor for Full Text Search.
+        /// </summary>
+        /// <param name="queryText"></param>
+        /// <param name="config"></param>
+        public FullTextSearchConfig(string queryText, string? config)
         {
             QueryText = queryText;
-            Config = config;
+
+            if (!string.IsNullOrEmpty(config))
+                Config = config!;
         }
     }
 }
