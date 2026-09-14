@@ -1,7 +1,12 @@
 ﻿using System.Diagnostics;
 
 string appDir = Environment.CurrentDirectory;
-var repoDir = Directory.GetParent(appDir).Parent.Parent.Parent.Parent;
+var repoDir = new DirectoryInfo(appDir);
+for (var i = 0; i < 5; i++)
+{
+	repoDir = repoDir.Parent
+		?? throw new InvalidOperationException($"Unable to locate repository root from '{appDir}'.");
+}
 var submodulesDirPath = Path.Combine(repoDir.FullName, ".Submodules");
 if(!Directory.Exists(submodulesDirPath))
 	throw new Exception($"Something went wrong, directory doesn't exists: {submodulesDirPath}");
@@ -30,6 +35,8 @@ cmd.Start();
 
 await cmd.WaitForExitAsync();
 Console.WriteLine(cmd.StandardOutput.ReadToEnd());
+if (cmd.ExitCode != 0)
+	throw new Exception($"dotnet publish failed with exit code {cmd.ExitCode}.");
 
 
 
@@ -37,42 +44,23 @@ Console.WriteLine(cmd.StandardOutput.ReadToEnd());
 string packageJsonTemplate = @"
 {
 	""name"": ""name_replace"",
-	""version"": ""1.1.0""
+	""version"": ""1.1.0"",
+	""displayName"": ""Supabase for Unity"",
+	""description"": ""Self-contained Supabase C# client for Unity."",
+	""unity"": ""2021.3"",
+	""author"": {
+		""name"": ""Jaxson Yorke"",
+		""url"": ""https://github.com/JaxsonYorke/supabase-unity""
+	}
 }";
 await File.WriteAllTextAsync(Path.Combine(unityDirPath, "package.json"), packageJsonTemplate.Replace("name_replace", "com.supabase.unity"));
 
-string asmdefTemplate = @"{
-""name"": ""name_replace"",
-""rootNamespace"": """",
-""references"": [],
-""includePlatforms"": [],
-""excludePlatforms"": [],
-""allowUnsafeCode"": false,
-""overrideReferences"": false,
-""precompiledReferences"": [],
-""autoReferenced"": true,
-""defineConstraints"": [],
-""noEngineReferences"": false
-}";
-await File.WriteAllTextAsync(Path.Combine(unityDirPath, "Supabase.asmdef"), asmdefTemplate.Replace("name_replace", "Supabase"));
 
-
-// create dlls packages
+// Replace the bundled runtime so removed dependencies cannot remain from an older build.
 var buildDir = new DirectoryInfo(Path.Combine(repoDir.FullName, ".build"));
-
-
-var unityDllsPath = Path.Combine(repoDir.FullName, ".UnityDlls");
 var runtimeDirPath = Path.Combine(unityDirPath, "Runtime");
-if (Directory.Exists(unityDllsPath))
-{
-	// Directory.Delete(unityDllsPath, true);
-	var filesToDelete = Directory.GetFiles(unityDllsPath, "*.dll", SearchOption.AllDirectories);
-	foreach(string delPath in filesToDelete)
-	{
-		File.Delete(delPath);
-	}
-}
-
+if (Directory.Exists(runtimeDirPath))
+	Directory.Delete(runtimeDirPath, true);
 Directory.CreateDirectory(runtimeDirPath);
 
 foreach(var file in buildDir.EnumerateFiles("*.dll"))
