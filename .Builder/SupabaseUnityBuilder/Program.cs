@@ -37,7 +37,7 @@ Console.WriteLine(cmd.StandardOutput.ReadToEnd());
 string packageJsonTemplate = @"
 {
 	""name"": ""name_replace"",
-	""version"": ""1.0.0""
+	""version"": ""1.1.0""
 }";
 await File.WriteAllTextAsync(Path.Combine(unityDirPath, "package.json"), packageJsonTemplate.Replace("name_replace", "com.supabase.unity"));
 
